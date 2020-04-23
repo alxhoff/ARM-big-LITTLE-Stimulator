@@ -38,24 +38,36 @@ struct sqrt_thread_args {
 	unsigned core;
 };
 
-static void stresserSetCoreAffinity(unsigned core)
+static int stresserSetCoreAffinity(unsigned core)
 {
+	int num_cores = sysconf(_SC_NPROCESSORS_ONLN);
+	if (core < 0 || core >= num_cores) {
+		PRINT_ERROR("Invalid CPU core given");
+		return -1;
+	}
+
 	cpu_set_t mask;
-    CPU_ZERO(&mask);
+	CPU_ZERO(&mask);
 	CPU_SET(core, &mask);
 
-    pthread_t current_thread = pthread_self();
-	if (pthread_setaffinity_np(current_thread, sizeof(cpu_set_t), &mask) == -1)
+	pthread_t current_thread = pthread_self();
+	if (pthread_setaffinity_np(current_thread, sizeof(cpu_set_t), &mask) ==
+	    -1) {
 		PRINT_ERROR("Setting core affinity");
+		return -1;
+	}
+
+	return 0;
 }
 
 static void stresserResetCoreAffinity(void)
 {
 	cpu_set_t mask;
-    CPU_ZERO(&mask);
+	CPU_ZERO(&mask);
 
-    pthread_t current_thread = pthread_self();
-	if (pthread_setaffinity_np(current_thread, sizeof(cpu_set_t), &mask) == -1)
+	pthread_t current_thread = pthread_self();
+	if (pthread_setaffinity_np(current_thread, sizeof(cpu_set_t), &mask) ==
+	    -1)
 		PRINT_ERROR("Resetting core affinity");
 }
 
@@ -63,7 +75,8 @@ void *stresserGetSqrtsPerSecond(void *args)
 {
 	struct sqrt_thread_args *st_args = (struct sqrt_thread_args *)args;
 
-	stresserSetCoreAffinity(st_args->core);
+	if (stresserSetCoreAffinity(st_args->core))
+		return (void *)NULL;
 
 	clock_t test_duration = 0, tmp_clock;
 
@@ -117,6 +130,11 @@ stresser_handle_t stresserCreate(unsigned *core_workloads,
 	// Wait for all cores to finish
 	for (int i = 0; i < SYSTEM_CORE_COUNT; i++)
 		pthread_join(threads[i], NULL);
+
+	printf("Calibrating cores done, sqrts/sec:");
+
+	for (int i = 0; i < SYSTEM_CORE_COUNT; i++)
+		printf("Core #%d: %u\n", i, stresser->cores[i].sqrts_required);
 
 	return (stresser_handle_t)stresser;
 }
