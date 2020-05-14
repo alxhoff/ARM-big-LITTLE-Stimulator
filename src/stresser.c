@@ -24,13 +24,15 @@ struct stresser_core {
 };
 
 struct stresser {
-	struct stresser_core cores[SYSTEM_CORE_COUNT];
+	struct stresser_core *cores;
+	/** struct stresser_core *cores[system_cpu_count]; */
 	unsigned num_threads;
 	unsigned duration;
 	unsigned slot_duration;
 	unsigned verbose;
 	unsigned slots_per_second;
-	unsigned sqrts_per_second[SYSTEM_CORE_COUNT];
+	unsigned *sqrts_per_second;
+	/** unsigned *sqrts_per_second[system_cpu_count]; */
 };
 
 struct sqrt_thread_args {
@@ -99,14 +101,23 @@ stresser_handle_t stresserCreate(unsigned *core_workloads,
 				 unsigned thread_count, unsigned run_duration,
 				 unsigned slot_duration, unsigned verbose)
 {
-	pthread_t threads[SYSTEM_CORE_COUNT];
+	pthread_t threads[system_cpu_count];
 	struct stresser *stresser =
 		(struct stresser *)malloc(sizeof(struct stresser));
 
 	if (!stresser)
-		return (stresser_handle_t)NULL;
+		goto err_stresser;
 
-	for (int i = 0; i < SYSTEM_CORE_COUNT; i++)
+	stresser->cores =
+		calloc(system_cpu_count, sizeof(struct stresser_core));
+	if (stresser->cores == NULL)
+		goto err_cores;
+
+	stresser->sqrts_per_second = calloc(system_cpu_count, sizeof(unsigned));
+	if (stresser->sqrts_per_second == NULL)
+		goto err_sqrts;
+
+	for (int i = 0; i < system_cpu_count; i++)
 		stresser->cores[i].workload = core_workloads[i];
 
 	stresser->duration = run_duration;
@@ -116,25 +127,39 @@ stresser_handle_t stresserCreate(unsigned *core_workloads,
 
 	stresser->slots_per_second = run_duration / slot_duration;
 
-	for (int i = 0; i < SYSTEM_CORE_COUNT; i++) {
-		struct sqrt_thread_args thread_args = {
-			.result = &stresser->cores[i].sqrts_required,
-			.core = i,
-		};
+	struct sqrt_thread_args *thread_args =
+		calloc(system_cpu_count, sizeof(struct sqrt_thread_args));
+	if (thread_args == NULL)
+		goto err_thread_args;
+
+	for (int i = 0; i < system_cpu_count; i++) {
+		thread_args[i].result = &stresser->cores[i].sqrts_required;
+		thread_args[i].core = i;
 
 		if (pthread_create(&threads[i], NULL, stresserGetSqrtsPerSecond,
-				   (void *)&thread_args))
+				   (void *)&thread_args[i]))
 			PRINT_ERROR("Creating sqrt calib thread #%d", i);
 	}
 
 	// Wait for all cores to finish
-	for (int i = 0; i < SYSTEM_CORE_COUNT; i++)
+	for (int i = 0; i < system_cpu_count; i++)
 		pthread_join(threads[i], NULL);
 
-	printf("Calibrating cores done, sqrts/sec:");
+	free(thread_args);
 
-	for (int i = 0; i < SYSTEM_CORE_COUNT; i++)
+	printf("Calibrating cores done, sqrts/sec:\n");
+
+	for (int i = 0; i < system_cpu_count; i++)
 		printf("Core #%d: %u\n", i, stresser->cores[i].sqrts_required);
 
 	return (stresser_handle_t)stresser;
+
+err_thread_args:
+	free(stresser->sqrts_per_second);
+err_sqrts:
+	free(stresser->cores);
+err_cores:
+	free(stresser);
+err_stresser:
+	return (stresser_handle_t)NULL;
 }

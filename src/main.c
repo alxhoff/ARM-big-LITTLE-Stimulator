@@ -1,6 +1,7 @@
 
 #include <argp.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #include "stresser.h"
 #include "config.h"
@@ -35,7 +36,7 @@ struct arguments {
 	char **strings;
 	unsigned verbose;
 	unsigned threads;
-	unsigned core_loads[SYSTEM_CORE_COUNT];
+	unsigned *core_loads;
 	unsigned duration;
 	unsigned slot;
 };
@@ -45,6 +46,8 @@ static struct arguments prog_arguments = {
 	.slot = DEFAULT_SLOT_DURATION,
 	.threads = DEFAULT_THREAD_COUNT,
 };
+
+unsigned system_cpu_count = 0;
 
 static error_t parse_opt(int key, char *arg, struct argp_state *state)
 {
@@ -60,7 +63,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
 		prog_arguments.threads = (unsigned)strtol(arg, NULL, 10);
 	case 'c': {
 		unsigned core = (unsigned)atoi(arg);
-		if (core < SYSTEM_CORE_COUNT)
+		if (core < system_cpu_count)
 			cur_core = core;
 	} break;
 	case 'l': {
@@ -87,9 +90,19 @@ static struct argp argp = { argp_options, parse_opt, req_args, doc };
 
 int main(int argc, char **argv)
 {
+#ifdef SYSTEM_CORE_COUNT
+	system_cpu_count = SYSTEM_CORE_COUNT;
+#else
+	system_cpu_count = sysconf(_SC_NPROCESSORS_ONLN);
+#endif //system_cpu_count
+
+	prog_arguments.core_loads = calloc(system_cpu_count, sizeof(unsigned));
+	if (prog_arguments.core_loads == NULL)
+		return -1;
+
 	argp_parse(&argp, argc, argv, 0, 0, &prog_arguments);
 
-	for (int i = 0; i < SYSTEM_CORE_COUNT; i++) {
+	for (int i = 0; i < system_cpu_count; i++) {
 		printf("Generating %u load on core %u\n",
 		       prog_arguments.core_loads[i], i);
 	};
