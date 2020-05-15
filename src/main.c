@@ -116,5 +116,7 @@ int main(int argc, char **argv)
 			       prog_arguments.threads, prog_arguments.duration,
 			       prog_arguments.slot, prog_arguments.verbose);
 
+    stresserRun(stresser);
+
 	return 0;
 }

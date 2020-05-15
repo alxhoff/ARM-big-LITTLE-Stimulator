@@ -40,6 +40,8 @@ struct sqrt_thread_args {
 	unsigned core;
 };
 
+static pthread_mutex_t stresser_lock = PTHREAD_MUTEX_INITIALIZER;
+
 static int stresserSetCoreAffinity(unsigned core)
 {
 	int num_cores = sysconf(_SC_NPROCESSORS_ONLN);
@@ -73,12 +75,12 @@ static void stresserResetCoreAffinity(void)
 		PRINT_ERROR("Resetting core affinity");
 }
 
-void *stresserGetSqrtsPerSecond(void *args)
+static void *stresserGetSqrtsPerSecond(void *args)
 {
 	struct sqrt_thread_args *st_args = (struct sqrt_thread_args *)args;
 
 	if (stresserSetCoreAffinity(st_args->core))
-		return (void *)NULL;
+		goto err_return;
 
 	clock_t test_duration = 0, tmp_clock;
 
@@ -94,6 +96,7 @@ void *stresserGetSqrtsPerSecond(void *args)
 
 	*(st_args->result) = (unsigned)(CLOCKS_PER_SEC / average_sqrt_duration);
 
+err_return:
 	return (void *)NULL;
 }
 
@@ -132,6 +135,8 @@ stresser_handle_t stresserCreate(unsigned *core_workloads,
 	if (thread_args == NULL)
 		goto err_thread_args;
 
+	pthread_mutex_lock(&stresser_lock);
+
 	for (int i = 0; i < system_cpu_count; i++) {
 		thread_args[i].result = &stresser->cores[i].sqrts_required;
 		thread_args[i].core = i;
@@ -144,6 +149,8 @@ stresser_handle_t stresserCreate(unsigned *core_workloads,
 	// Wait for all cores to finish
 	for (int i = 0; i < system_cpu_count; i++)
 		pthread_join(threads[i], NULL);
+
+	pthread_mutex_unlock(&stresser_lock);
 
 	free(thread_args);
 
@@ -162,4 +169,92 @@ err_cores:
 	free(stresser);
 err_stresser:
 	return (stresser_handle_t)NULL;
+}
+
+struct run_thread_args {
+	struct stresser *stresser;
+	unsigned *workload;
+	unsigned *slots_per_second;
+	unsigned core;
+	unsigned work_sqrts;
+	unsigned sleep_milliseconds;
+};
+
+static void *stresserStressCore(void *args)
+{
+	struct run_thread_args *st_args = (struct run_thread_args *)args;
+
+	if (stresserSetCoreAffinity(st_args->core))
+		goto err_return;
+
+	clock_t start_time = clock();
+
+	for (int i = 0; i < (*st_args->slots_per_second *
+			     (st_args->stresser->duration / 1000.0));
+	     i++) {
+		for (int j = 0; j < st_args->work_sqrts; j++)
+			sqrt(rand());
+		usleep(st_args->sleep_milliseconds * 1000);
+	}
+
+	printf("Test on core #%d ran for %ld milliseconds\n", st_args->core,
+	       clock() - start_time);
+
+err_return:
+	return (void *)NULL;
+}
+
+int stresserRun(stresser_handle_t stresser)
+{
+	pthread_t threads[system_cpu_count];
+
+	if (stresser == NULL)
+		return -1;
+
+	struct stresser *st = (struct stresser *)stresser;
+
+	struct run_thread_args *thread_args =
+		calloc(system_cpu_count, sizeof(struct run_thread_args));
+	if (thread_args == NULL)
+		return -1;
+
+	for (int i = 0; i < system_cpu_count; i++) {
+		thread_args[i].stresser = st;
+		thread_args[i].workload = &st->cores[i].workload;
+		thread_args[i].slots_per_second = &st->slots_per_second;
+		thread_args[i].core = i;
+		thread_args[i].work_sqrts = *thread_args[i].workload / 100.0 *
+					    st->cores[i].sqrts_required /
+					    st->slots_per_second;
+		thread_args[i].sleep_milliseconds =
+			(100 - *thread_args[i].workload) * 10 /
+			st->slots_per_second;
+
+		printf("Core %u: \n"
+		       "    Creating workload of %u using %u slots\n"
+		       "    Calculating %u sqrts per slots, sleeping %u milliseconds "
+		       "between slots\n"
+		       "    Max sqrts/sec for core is %u\n",
+		       i, *thread_args[i].workload,
+		       *thread_args[i].slots_per_second,
+		       thread_args[i].work_sqrts,
+		       thread_args[i].sleep_milliseconds,
+		       st->cores[i].sqrts_required);
+	}
+
+	pthread_mutex_lock(&stresser_lock);
+
+	for (int i = 0; i < system_cpu_count; i++)
+		if (pthread_create(&threads[i], NULL, stresserStressCore,
+				   (void *)&thread_args[i]))
+			PRINT_ERROR("Creating stresser thread #%d failed", i);
+
+	for (int i = 0; i < system_cpu_count; i++)
+		pthread_join(threads[i], NULL);
+
+	pthread_mutex_unlock(&stresser_lock);
+
+	free(thread_args);
+
+	return 0;
 }
